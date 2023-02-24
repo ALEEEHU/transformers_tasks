@@ -66,7 +66,7 @@ prompts = [
     '这次购物总的来说体验很'
 ]
 
-# 情感分类模型
+# 情感分类模型——「情绪识别模型」我们选用 transformers 中内置的 sentiment-analysis pipeline 来实现。
 senti_tokenizer = AutoTokenizer.from_pretrained('uer/roberta-base-finetuned-jd-binary-chinese')
 senti_model = AutoModelForSequenceClassification.from_pretrained('uer/roberta-base-finetuned-jd-binary-chinese')
 sentiment_pipe = pipeline('sentiment-analysis', model=senti_model, tokenizer=senti_tokenizer, device=pipe_device)
@@ -88,10 +88,10 @@ gen_kwargs = {
 }
 
 # RL Trainer
-ppo_trainer = PPOTrainer(gpt2_model, gpt2_model_ref, gpt2_tokenizer, **config)
+ppo_trainer = PPOTrainer(gpt2_model, gpt2_model_ref, gpt2_tokenizer, **config) # initialize the agent
 total_ppo_epochs = int(np.ceil(config["steps"]/config['batch_size']))
 
-for epoch in tqdm(range(total_ppo_epochs)):
+for epoch in tqdm(range(total_ppo_epochs)):#total_ppo_epochs=157
     logs, timing = dict(), dict()
     t0 = time.time()
 
@@ -104,21 +104,21 @@ for epoch in tqdm(range(total_ppo_epochs)):
         tokens = gpt2_tokenizer.encode(random_prompt)
         batch['tokens'].append(tokens)
         batch['query'].append(random_prompt)
-    query_tensors = [torch.tensor(t).long().to(device) for t in batch["tokens"]]
+    query_tensors = [torch.tensor(t).long().to(device) for t in batch["tokens"]] #len(batch['tokens'])=128
 
     t = time.time()
     response_tensors = []
-    for i in range(config['batch_size']):
-        gen_len = config['gen_len']
+    for i in range(config['batch_size']):#config['batch_size']=128
+        gen_len = config['gen_len']#16
         response = gpt2_model.generate(query_tensors[i].unsqueeze(dim=0),
                                        max_new_tokens=gen_len, **gen_kwargs)
         response_tensors.append(response.squeeze()[-gen_len:])
-    batch['response'] = [gpt2_tokenizer.decode(r.squeeze()) for r in response_tensors]
+    batch['response'] = [gpt2_tokenizer.decode(r.squeeze()) for r in response_tensors]#len=128
     timing['time/get_response'] = time.time() - t
 
     t = time.time()
     texts = [q + r for q,r in zip(batch['query'], batch['response'])]           # 计算正向/负向情感得分
-    pipe_outputs = sentiment_pipe(texts)
+    pipe_outputs = sentiment_pipe(texts)#128
     rewards = []
     for output in pipe_outputs:
         if output['label'] == 'positive (stars 4 and 5)':
@@ -127,11 +127,12 @@ for epoch in tqdm(range(total_ppo_epochs)):
             rewards.append(1 - output['score'])
         else:
             raise ValueError(f"错误的推理结果{output['label']}.")
-    rewards = torch.tensor(rewards).to(device)                                  # 将正向情感的得分作为生成得分
+    rewards = torch.tensor(rewards).to(device)                                  # 将正向情感的得分作为生成得分,score值作为reward，会输入agent中进行优化
     timing['time/get_sentiment_preds'] = time.time() - t
 
     t = time.time()
-    stats = ppo_trainer.step(query_tensors, response_tensors, rewards)          # PPO Update
+    stats = ppo_trainer.step(query_tensors, response_tensors, rewards)          # PPO Update 
+    # show logs and curves
     timing['time/optimization'] = time.time() - t
 
     timing['time/epoch'] = time.time() - t0                                     # logging

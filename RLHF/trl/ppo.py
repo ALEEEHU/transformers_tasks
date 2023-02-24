@@ -32,8 +32,8 @@ class AdaptiveKLController:
     https://arxiv.org/pdf/1909.08593.pdf
     """
     def __init__(self, init_kl_coef, target, horizon):
-        self.value = init_kl_coef
-        self.target = target
+        self.value = init_kl_coef #0.2
+        self.target = target #6
         self.horizon = horizon
 
     def update(self, current, n_steps):
@@ -54,7 +54,7 @@ class FixedKLController:
 
 # Cell
 
-class PPOTrainer:
+class PPOTrainer: #agent
     """
     The PPO_trainer uses Proximal Policy Optimization to optimise language models.
     """
@@ -81,7 +81,7 @@ class PPOTrainer:
 
         Args:
             model (torch.model): Hugging Face transformer GPT2 model with value head
-            ref_model (torch.model): Hugging Face transformer GPT2 refrence model used for KL penalty
+            ref_model (torch.model): Hugging Face transformer GPT2 refrence model used for KL penalty (provide reference model API)
             tokenizer (tokenizer): Hugging Face tokenizer
             ppo_params (dict or None): PPO parameters for training. Can include following keys:
                 'lr' (float): Adam learning rate, default: 1.41e-5
@@ -104,6 +104,7 @@ class PPOTrainer:
 
         self.ref_model = ref_model
         self.model = model
+
         self.tokenizer = tokenizer
         self.data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
@@ -130,8 +131,8 @@ class PPOTrainer:
             train_stats (dict): a summary of the training statistics
         """
 
-        bs = self.ppo_params['batch_size']
-        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"
+        bs = self.ppo_params['batch_size']#128
+        assert bs == len(queries), f"Batch size ({bs}) does not match number of examples ({len(queries)})"#判断是否与query的长度一致
 
         timing = dict()
         t0 = time.time()
@@ -151,7 +152,7 @@ class PPOTrainer:
         idxs = list(range(bs))
         for _ in range(self.ppo_params['ppo_epochs']):
             random.shuffle(idxs)
-            for i in range(bs):
+            for i in range(bs):#bs=128
                 idx = idxs[i]
                 train_stats = self.train_minibatch(logprobs[idx].unsqueeze(0), values[idx].unsqueeze(0),
                                                    rewards[idx].unsqueeze(0), queries[idx].unsqueeze(0),
@@ -164,14 +165,14 @@ class PPOTrainer:
         train_stats = stack_dicts(all_stats)
 
         # reshape advantages/ratios such that they are not averaged.
-        train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)
+        train_stats['policy/advantages'] = torch.flatten(train_stats['policy/advantages']).unsqueeze(0)#[512,16]-->[1, 8192]
         train_stats['policy/advantages'] = torch.nan_to_num(train_stats['policy/advantages'], WANDB_PADDING)
-        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)
+        train_stats['policy/ratio'] = torch.flatten(train_stats['policy/ratio']).unsqueeze(0)#[512,16]-->[1, 8192]
 
         stats = self.record_step_stats(scores=scores, logprobs=logprobs, ref_logprobs=ref_logprobs,
                                        non_score_reward=non_score_reward, train_stats=train_stats,
                                        kl_coef=self.kl_ctl.value)
-        stats = stats_to_np(stats)
+        stats = stats_to_np(stats) #Cast all torch.tensors in dict to numpy arrays.
         timing['time/ppo/calc_stats'] = time.time()-t
 
         self.kl_ctl.update(stats['objective/kl'], self.ppo_params['batch_size'])
@@ -182,13 +183,14 @@ class PPOTrainer:
 
     def batched_forward_pass(self, queries, responses):
         """Calculate model outputs in multiple batches."""
-        bs = self.ppo_params['batch_size']
-        fbs = self.ppo_params['forward_batch_size']
+        bs = self.ppo_params['batch_size']#128
+        fbs = self.ppo_params['forward_batch_size']#16
         all_logprobs = []
         all_ref_logprobs = []
         all_values = []
 
-        for i in range(int(bs/fbs)):
+        for i in range(int(bs/fbs)):#range(8)
+            # query_batch与response_batch都是16，即取16条数据出来
             query_batch = queries[i*fbs:(i+1)*fbs]
             response_batch = responses[i*fbs:(i+1)*fbs]
             input_ids = self.data_collator([torch.cat([q, r]) for q, r in zip(query_batch, response_batch)])["input_ids"]
@@ -203,7 +205,7 @@ class PPOTrainer:
                 all_values.append(v[j, start-1:end-1])                                  # 生成的tokens的value
                 all_logprobs.append(logprobs[j, start:end])                             # 生成的tokens的概率
                 all_ref_logprobs.append(ref_logprobs[j, start:end])                     # ref model生成的tokens的概率
-        return all_logprobs, all_ref_logprobs, all_values
+        return all_logprobs, all_ref_logprobs, all_values #都是总共128个，每个tensor的shape为16
 
     def train_minibatch(self, logprobs, values, rewards, query, response, model_input):
         """Train one PPO minibatch"""
@@ -230,7 +232,7 @@ class PPOTrainer:
         """Calculate policy and value losses."""
         lastgaelam = 0
         advantages_reversed = []
-        gen_len = response.shape[1]
+        gen_len = response.shape[1] #16
 
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
